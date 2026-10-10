@@ -1,0 +1,304 @@
+Aqui está o projeto completo da interface visual em React + Tailwind CSS para gerenciar e configurar impressoras térmicas (com suporte a conexões Bluetooth via Web Bluetooth API, USB e Rede/IP), já adaptado com suporte pré-configurado para a Knup KP1025 e gerador de código para seu desenvolvedor.
+
+1. Componente da Interface de Impressoras (src/components/PrinterManager.tsx)
+Este componente permite parear novas impressoras Bluetooth direto pelo navegador, testar a impressão de cupom e ajustar configurações como densidade, corte e largura de papel.
+
+TypeScript
+'use client';
+
+import React, { useState } from 'react';
+import { 
+  Printer, 
+  Bluetooth, 
+  Wifi, 
+  Usb, 
+  RefreshCw, 
+  CheckCircle2, 
+  XCircle, 
+  Sliders, 
+  Send,
+  Plus
+} from 'lucide-react';
+
+interface PrinterDevice {
+  id: string;
+  name: string;
+  model: string;
+  type: 'BLUETOOTH' | 'NETWORK' | 'USB';
+  address: string; // MAC ou IP
+  status: 'ONLINE' | 'OFFLINE' | 'PRINTING';
+  paperWidth: '58mm' | '80mm';
+  density: number;
+}
+
+export const PrinterManager = () => {
+  const [printers, setPrinters] = useState<PrinterDevice[]>([
+    {
+      id: '1',
+      name: 'Balcão - Knup KP1025',
+      model: 'Knup KP1025',
+      type: 'BLUETOOTH',
+      address: 'DC:0D:30:8F:AC:12',
+      status: 'ONLINE',
+      paperWidth: '58mm',
+      density: 3,
+    }
+  ]);
+
+  const [selectedPrinter, setSelectedPrinter] = useState<PrinterDevice | null>(printers[0]);
+  const [isScanning, setIsScanning] = useState(false);
+
+  // Pareamento Web Bluetooth API
+  const handleConnectBluetooth = async () => {
+    setIsScanning(true);
+    try {
+      // Solicita acesso a dispositivos Bluetooth próximos (servidor Serial / SPP)
+      const device = await (navigator as any).bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['00001101-0000-1000-8000-00805f9b34fb'] // UUID Serial Port Profile
+      });
+
+      const newPrinter: PrinterDevice = {
+        id: device.id || Date.now().toString(),
+        name: device.name || 'Impressora Bluetooth',
+        model: device.name?.includes('KP1025') ? 'Knup KP1025' : 'Térmica Genérica',
+        type: 'BLUETOOTH',
+        address: device.id,
+        status: 'ONLINE',
+        paperWidth: '58mm',
+        density: 3,
+      };
+
+      setPrinters((prev) => [...prev, newPrinter]);
+      setSelectedPrinter(newPrinter);
+    } catch (error) {
+      console.log('Pareamento cancelado ou não suportado:', error);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // Envio de Teste de Impressão (ESC/POS)
+  const handlePrintTestPage = () => {
+    if (!selectedPrinter) return;
+    alert(`Enviando comando ESC/POS de teste para: ${selectedPrinter.name}`);
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto space-y-6 bg-slate-950 text-slate-100 min-h-screen">
+      {/* CABEÇALHO */}
+      <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
+            <Printer className="w-7 h-7 text-blue-500" />
+            Gerenciador de Impressoras
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Configure impressoras térmicas ESC/POS (Bluetooth, USB ou Rede IP).
+          </p>
+        </div>
+
+        <button
+          onClick={handleConnectBluetooth}
+          disabled={isScanning}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+        >
+          {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          Parear Impressora Bluetooth
+        </button>
+      </div>
+
+      <div className="grid grid-cols-12 gap-6">
+        {/* LISTA DE IMPRESSORAS */}
+        <div className="col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+          <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-2">
+            Dispositivos Cadastrados
+          </h2>
+
+          {printers.map((printer) => (
+            <div
+              key={printer.id}
+              onClick={() => setSelectedPrinter(printer)}
+              className={`p-4 rounded-lg border cursor-pointer transition-all flex justify-between items-center ${
+                selectedPrinter?.id === printer.id
+                  ? 'bg-blue-950/40 border-blue-500'
+                  : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+              }`}
+            >
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-white">{printer.name}</span>
+                  {printer.type === 'BLUETOOTH' && <Bluetooth className="w-3.5 h-3.5 text-blue-400" />}
+                  {printer.type === 'NETWORK' && <Wifi className="w-3.5 h-3.5 text-emerald-400" />}
+                  {printer.type === 'USB' && <Usb className="w-3.5 h-3.5 text-amber-400" />}
+                </div>
+                <p className="text-xs text-slate-400 font-mono">{printer.address}</p>
+                <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded">
+                  {printer.paperWidth}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                {printer.status === 'ONLINE' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-rose-500" />
+                )}
+                <span className="text-xs text-slate-300">{printer.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* PAINEL DE CONFIGURAÇÃO */}
+        {selectedPrinter ? (
+          <div className="col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+            <div className="border-b border-slate-800 pb-4 flex justify-between items-start">
+              <div>
+                <h3 className="text-lg font-bold text-white">{selectedPrinter.name}</h3>
+                <p className="text-xs text-slate-400">Modelo: {selectedPrinter.model}</p>
+              </div>
+              <button
+                onClick={handlePrintTestPage}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-2 border border-slate-700 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5 text-blue-400" />
+                Imprimir Teste
+              </button>
+            </div>
+
+            {/* FORMULÁRIO DE AJUSTES */}
+            <div className="space-y-4">
+              <h4 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-blue-400" /> Parâmetros de Impressão
+              </h4>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Largura da Bobina</label>
+                  <select
+                    value={selectedPrinter.paperWidth}
+                    onChange={(e) =>
+                      setSelectedPrinter({ ...selectedPrinter, paperWidth: e.target.value as any })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="58mm">58mm (Knup KP1025 / Padrão)</option>
+                    <option value="80mm">80mm (Não-fiscal grande)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Densidade/Aquecimento</label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="5"
+                    value={selectedPrinter.density}
+                    onChange={(e) =>
+                      setSelectedPrinter({ ...selectedPrinter, density: Number(e.target.value) })
+                    }
+                    className="w-full accent-blue-500 mt-2"
+                  />
+                </div>
+              </div>
+
+              {/* DICA KNUP KP1025 */}
+              <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 text-xs text-slate-400 space-y-1 font-mono">
+                <p className="text-blue-400 font-semibold">💡 Nota de Configuração Knup KP1025:</p>
+                <p>• PIN padrão de pareamento Android: <span className="text-white font-bold">0000</span> ou <span className="text-white font-bold">1234</span>.</p>
+                <p>• Comandos de Emulação: <span className="text-white">ESC/POS</span> (Modo Texto/Gráfico 203 DPI).</p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-6 flex items-center justify-center text-slate-500">
+            Selecione uma impressora para gerenciar.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+2. Prompt de Especificação para o Coder
+Copie o texto abaixo e passe para o seu desenvolvedor integrar a biblioteca de comunicação nativa para conectar a Knup KP1025 via Bluetooth/USB:
+
+Markdown
+# TASK: Módulo de Comunicação com Impressoras Térmicas (ESC/POS) — Knup KP1025
+
+## 🎯 Objetivo
+Implementar o serviço de impressão no frontend/mobile para enviar comandos ESC/POS diretamente para a impressora **Knup KP1025** via Web Bluetooth API ou biblioteca React Native/Capacitor.
+
+---
+
+## 🛠️ Especificações Técnicas da Knup KP1025
+- **Largura do Papel:** 58mm (Largura útil de impressão: 48mm / 384 pontos por linha).
+- **Protocolo:** ESC/POS.
+- **Conectividade:** Bluetooth 4.0 / USB (Android / Windows / Linux).
+
+---
+
+## 💻 Serviço de Geração de Comandos ESC/POS (`src/services/escpos.service.ts`)
+
+Desenvolva uma classe para converter texto e cupons em ByteArrays binários para envio via Bluetooth:
+
+```typescript
+export class EscPosEncoder {
+  private buffer: number[] = [];
+
+  // Inicializa a impressora
+  public init(): EscPosEncoder {
+    this.buffer.push(0x1b, 0x40);
+    return this;
+  }
+
+  // Alinhamento (0: Esquerda, 1: Centro, 2: Direita)
+  public align(align: 0 | 1 | 2): EscPosEncoder {
+    this.buffer.push(0x1b, 0x61, align);
+    return this;
+  }
+
+  // Texto com quebra de linha
+  public text(str: string): EscPosEncoder {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(str + '\n');
+    bytes.forEach((b) => this.buffer.push(b));
+    return this;
+  }
+
+  // Avança N linhas
+  public feed(lines: number = 2): EscPosEncoder {
+    this.buffer.push(0x1b, 0x64, lines);
+    return this;
+  }
+
+  public getBytes(): Uint8Array {
+    return new Uint8Array(this.buffer);
+  }
+}
+📱 Fluxo de Impressão via Web Bluetooth API
+TypeScript
+export async function printToBluetoothDevice(device: any, dataBytes: Uint8Array) {
+  const server = await device.gatt.connect();
+  // Busca o serviço Serial Port (SPP)
+  const service = await server.getPrimaryService('00001101-0000-1000-8000-00805f9b34fb');
+  const characteristic = await service.getCharacteristic('00002a00-0000-1000-8000-00805f9b34fb');
+
+  // Envia em chunks para não estourar o buffer de 58mm da Knup
+  const CHUNK_SIZE = 512;
+  for (let i = 0; i < dataBytes.length; i += CHUNK_SIZE) {
+    const chunk = dataBytes.slice(i, i + CHUNK_SIZE);
+    await characteristic.writeValue(chunk);
+  }
+}
+📋 Critérios de Aceite
+[ ] A interface deve listar dispositivos pareados e permitir a busca de impressoras térmicas próximas.
+
+[ ] O envio do teste deve imprimir um cupom formatado no padrão 58mm sem quebrar palavras ao meio.
+
+[ ] O serviço deve tratar o fechamento ou perda da conexão Bluetooth de forma amigável na UI.
+
+
+---
+
+Qual funcionalidade adicional você prefere adicionar a essa UI (ex: histórico de impressões ou envio de LOGO/QR Code)?

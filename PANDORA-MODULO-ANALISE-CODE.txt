@@ -1,0 +1,327 @@
+TASK: Módulo "Análise Profunda" (SAST & Code Audit UI) — MCinfraTI Radar Security
+🎯 Objetivo
+Criar uma nova aba na área administrativa chamada "Análise Profunda". Ela permitirá ao usuário submeter o código-fonte de um projeto — seja colando a URL de um repositório Git ou fazendo upload de um arquivo compactado (ZIP) — para executar a auditoria estática baseada nos 5 pilares de segurança (Banco Sem Tranca, Permissões no Navegador, IDOR, Chaves Expostas e Inputs sem Tratamento).
+
+🏗️ 1. Arquitetura da Interface (UI/UX)
+A tela deve ser dividida em duas etapas principais:
+
+Configuração da Análise (Formulário de Entrada)
+
+Dashboard de Resultados (Visualização e Ações)
+
+Componentes Principais da UI
+Seletor de Origem do Código (Tabs/Cards):
+
+Aba Repositório Git: Campo de input para URL ([https://github.com/usuario/repositorio](https://github.com/usuario/repositorio)), seleção de branch (default: main) e campo para Personal Access Token (PAT) caso o repositório seja privado.
+
+Aba Upload de Arquivo: Zona de Drag & Drop aceitando arquivos .zip ou .tar.gz (limite máximo sugerido: 50MB).
+
+Painel de Status da Execução (Progress Bar):
+
+Métrica visual em tempo real mostrando as etapas: Upload / Git Clone → Detecção de Stack → Varredura SAST → Geração do Relatório.
+
+Área de Resultados (Dashboard Interativo):
+
+Resumo da Stack: Cards com badges mostrando linguagem, framework, ORM e arquivos de deploy identificados.
+
+Filtros Rápidos: Botões para filtrar por severidade (CRÍTICA, ALTA, MÉDIA, BAIXA, PONTOS FORTES) e por pilar de falha.
+
+Lista de Vulnerabilidades (Accordion List): Cada item expansível mostra:
+
+Badge de Severidade e Caminho do Arquivo com Número da Linha (src/api/auth.ts:45).
+
+Blockquote com o trecho de código vulnerável com destaque de sintaxe (Syntax Highlighting).
+
+Explicação clara de por que o trecho é explorável e a sugestão de correção.
+
+Botão "Copiar Issue GitHub" para área de transferência.
+
+Barra de Ações da Header:
+
+Botão "Exportar PDF Completo" (chama a rota de PDF com o template compilado).
+
+🛠️ 2. Especificação do Backend e API
+Endpoint de Submissão para Análise
+POST /api/admin/deep-analysis/scan
+
+Payload (para repositório Git):
+JSON
+{
+  "sourceType": "GIT",
+  "repositoryUrl": "https://github.com/empresa/projeto-backend.git",
+  "branch": "main",
+  "apiToken": "ghp_xxxxxxxxxxxx", // Opcional (repositórios privados)
+  "projectName": "Projeto Backend Produção"
+}
+Payload (para upload de ZIP - multipart/form-data):
+file: arquivo .zip
+
+projectName: string
+
+sourceType: "ZIP"
+
+💻 3. Código do Componente React/Next.js (DeepAnalysisView.tsx)
+Passe o código abaixo como referência direta para a estrutura da tela:
+
+TypeScript
+'use client';
+
+import React, { useState } from 'react';
+import { 
+  FolderZip, 
+  GitBranch, 
+  Upload, 
+  Play, 
+  FileCode, 
+  ShieldAlert, 
+  CheckCircle2, 
+  Download,
+  Copy,
+  Loader2
+} from 'lucide-react';
+
+export const DeepAnalysisView = () => {
+  const [activeTab, setActiveTab] = useState<'git' | 'zip'>('git');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
+  
+  // Estados do formulário
+  const [repoUrl, setRepoUrl] = useState('');
+  const [branch, setBranch] = useState('main');
+  const [zipFile, setZipFile] = useState<File | null>(null);
+
+  const handleStartAnalysis = async () => {
+    setIsAnalyzing(true);
+    // Simulação do tempo de análise (Substituir pela chamada à API real)
+    setTimeout(() => {
+      setIsAnalyzing(false);
+      setAnalysisComplete(true);
+    }, 3000);
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 text-slate-100">
+      {/* CABEÇALHO */}
+      <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
+            <ShieldAlert className="w-7 h-7 text-blue-500" />
+            Análise Profunda de Código (SAST)
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Audite repositórios completos em busca das 5 falhas críticas de segurança.
+          </p>
+        </div>
+        {analysisComplete && (
+          <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-medium transition-colors text-sm">
+            <Download className="w-4 h-4" />
+            Exportar PDF Executivo
+          </button>
+        )}
+      </div>
+
+      {/* FORMULÁRIO DE ENTRADA (Apenas se não concluiu a análise) */}
+      {!analysisComplete && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+          <h2 className="text-lg font-semibold mb-4 text-slate-200">1. Selecione a Origem do Projeto</h2>
+          
+          {/* Seletor de Abas */}
+          <div className="flex gap-4 border-b border-slate-800 mb-6">
+            <button
+              onClick={() => setActiveTab('git')}
+              className={`flex items-center gap-2 pb-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'git'
+                  ? 'border-blue-500 text-blue-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <GitBranch className="w-4 h-4" />
+              Repositório Git
+            </button>
+            <button
+              onClick={() => setActiveTab('zip')}
+              className={`flex items-center gap-2 pb-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'zip'
+                  ? 'border-blue-500 text-blue-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <FolderZip className="w-4 h-4" />
+              Upload de Pacote (ZIP)
+            </button>
+          </div>
+
+          {/* Conteúdo Aba Git */}
+          {activeTab === 'git' && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">URL do Repositório (HTTPS)</label>
+                <input
+                  type="text"
+                  placeholder="https://github.com/usuario/repositorio.git"
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Branch</label>
+                  <input
+                    type="text"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Token de Acesso / PAT (Opcional)</label>
+                  <input
+                    type="password"
+                    placeholder="ghp_xxxxxxxxxxxx"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Conteúdo Aba ZIP */}
+          {activeTab === 'zip' && (
+            <div className="border-2 border-dashed border-slate-800 rounded-xl p-8 text-center hover:border-slate-700 transition-colors cursor-pointer bg-slate-950/50">
+              <Upload className="w-10 h-10 text-slate-500 mx-auto mb-2" />
+              <p className="text-sm text-slate-300 font-medium">Arraste o arquivo ZIP do código-fonte aqui</p>
+              <p className="text-xs text-slate-500 mt-1">Suporta arquivos .zip ou .tar.gz até 50MB</p>
+              <input 
+                type="file" 
+                accept=".zip,.gz" 
+                className="hidden" 
+                id="zip-upload"
+                onChange={(e) => setZipFile(e.target.files?.[0] || null)}
+              />
+              <label 
+                htmlFor="zip-upload" 
+                className="inline-block mt-4 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded cursor-pointer transition-colors"
+              >
+                Selecionar Arquivo
+              </label>
+              {zipFile && <p className="text-xs text-blue-400 mt-2">Selecionado: {zipFile.name}</p>}
+            </div>
+          )}
+
+          {/* Botão de Disparo */}
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={handleStartAnalysis}
+              disabled={isAnalyzing}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 rounded-lg font-medium text-sm transition-all shadow-lg"
+            >
+              {isAnalyzing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Analisando Código...
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 fill-current" />
+                  Iniciar Análise Profunda
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* PAINEL DE RESULTADOS (Exibido após término) */}
+      {analysisComplete && (
+        <div className="space-y-6">
+          {/* Card de Stack Detectada */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <FileCode className="w-8 h-8 text-blue-400" />
+              <div>
+                <h3 className="text-sm font-semibold text-white">Stack Detectada Automática</h3>
+                <div className="flex gap-2 mt-1 text-xs">
+                  <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded">Node.js (TypeScript)</span>
+                  <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded">Next.js 14</span>
+                  <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded">Supabase (RLS)</span>
+                </div>
+              </div>
+            </div>
+            <button 
+              onClick={() => setAnalysisComplete(false)} 
+              className="text-xs text-slate-400 hover:text-white underline"
+            >
+              Realizar Nova Análise
+            </button>
+          </div>
+
+          {/* Métricas Rápidas */}
+          <div className="grid grid-cols-5 gap-3">
+            <div className="bg-slate-900 border-l-4 border-red-600 p-3 rounded-lg border-y border-r border-slate-800">
+              <span className="text-xs text-slate-400 block">Críticas</span>
+              <span className="text-xl font-bold text-white">1</span>
+            </div>
+            <div className="bg-slate-900 border-l-4 border-orange-500 p-3 rounded-lg border-y border-r border-slate-800">
+              <span className="text-xs text-slate-400 block">Altas</span>
+              <span className="text-xl font-bold text-white">3</span>
+            </div>
+            <div className="bg-slate-900 border-l-4 border-amber-500 p-3 rounded-lg border-y border-r border-slate-800">
+              <span className="text-xs text-slate-400 block">Médias</span>
+              <span className="text-xl font-bold text-white">2</span>
+            </div>
+            <div className="bg-slate-900 border-l-4 border-blue-500 p-3 rounded-lg border-y border-r border-slate-800">
+              <span className="text-xs text-slate-400 block">Baixas</span>
+              <span className="text-xl font-bold text-white">4</span>
+            </div>
+            <div className="bg-slate-900 border-l-4 border-emerald-500 p-3 rounded-lg border-y border-r border-slate-800">
+              <span className="text-xs text-slate-400 block">Pontos Fortes</span>
+              <span className="text-xl font-bold text-white">12</span>
+            </div>
+          </div>
+
+          {/* Lista de Achados */}
+          <div className="space-y-4">
+            <h3 className="text-md font-semibold text-slate-200">Vulnerabilidades Identificadas</h3>
+            
+            {/* Achado 1 */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+              <div className="flex justify-between items-start">
+                <div className="flex items-center gap-2">
+                  <span className="bg-red-500/10 text-red-400 border border-red-500/30 text-[10px] font-bold px-2 py-0.5 rounded uppercase">
+                    CRÍTICA
+                  </span>
+                  <span className="text-xs font-mono text-blue-400">src/api/routes/tenants.ts:42</span>
+                </div>
+                <button className="flex items-center gap-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded transition-colors">
+                  <Copy className="w-3 h-3" />
+                  Copiar Issue GitHub
+                </button>
+              </div>
+
+              <h4 className="text-sm font-semibold text-white">BANCO SEM TRANCA: Ausência de Filtro de Tenant (RLS)</h4>
+              
+              <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-slate-300">
+                <code>const tenants = await supabase.from('organizations').select('*');</code>
+              </div>
+
+              <p className="text-xs text-slate-400">
+                <strong>Por que é explorável:</strong> A consulta realiza uma busca global na tabela sem validar o ID da organização à qual o usuário autenticado pertence.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+4. Critérios de Aceite para o Coder
+[ ] A aba Análise Profunda deve estar acessível na barra lateral/menu administrativo.
+
+[ ] O formulário deve validar a URL do Git ou garantir que o arquivo enviado é do tipo ZIP/TAR.
+
+[ ] Implementar a descompactação temporária do repositório em diretório isolado no servidor durante a execução do scan.
+
+[ ] O botão "Copiar Issue GitHub" deve preencher a área de transferência com o Markdown no padrão das Issues.
+
+[ ] O botão de exportação deve disparar a rota do PDF gerado pelo Puppeteer.

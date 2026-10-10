@@ -1,0 +1,62 @@
+Markdown
+### 🚨 PROMPT DE REFATORAÇÃO E AJUSTE DO GERADOR DE PDF (RADAR SECURITY)
+
+Olá! Precisamos refatorar o motor de geração de PDF do **MCinfraTI Radar Security**. O relatório gerado atualmente apresentou diversos problemas de sobreposição de elementos, erros de paginação e incoerência de dados.
+
+Por favor, aplique as seguintes correções técnicas e estruturais no template HTML/CSS e na lógica de compilação do PDF:
+
+---
+
+#### 1. Correção de Layout e Quebras de Página (CSS Print Engine)
+- **Eliminar Flexbox/Grid no nível do `body` e container pai:** O renderizador de PDF (WeasyPrint/Puppeteer) não resolve bem `display: flex` em contêineres principais, o que causou sobreposição de textos na página 2. Substitua layouts de colunas por `display: table` / `table-cell` ou blocos estruturados.
+- **Corrigir o número total de páginas:** A última página está sendo impressa como `"Página 6 de 5"`. Ajuste a variável global do total de páginas e utilize regras CSS paged media corretas:
+  ```css
+  @page {
+    size: A4;
+    margin: 15mm 12mm;
+    @bottom-right {
+      content: "Página " counter(page) " de " counter(pages);
+    }
+  }
+  
+PDF
+Evitar quebras orfãs: Adicione page-break-inside: avoid; no bloco de "Declaração de Confidencialidade" e "Assinatura do Responsável" para que eles fiquem junto com as "Recomendações Priorizadas" na página 5, eliminando a 6ª página quase em branco.
+
+Margens do rodapé: Ajuste o padding-bottom das seções para evitar que o conteúdo passe por cima do texto "Documento Confidencial".
+
+2. Normalização e Tradução dos Textos (i18n)
+Padronização em Português (PT-BR):
+
+Altere "Use HSTS to enforce HTTPS..." para "Habilite o cabeçalho HSTS para forçar conexões seguras HTTPS".
+
+Altere "Add a Content-Security-Policy header..." para "Adicione o cabeçalho Content-Security-Policy para prevenir ataques de XSS e injeção de dados".
+
+Altere "TLS scan failed" para "Falha na varredura da cifra/certificado TLS".
+
+Correção da Marca: Unifique todas as menções da empresa para MCinfraTI (corrigir locais onde está escrito MCintraTI com 't').
+
+3. Ajuste Lógico de Severidades e Score (Backend -> PDF)
+Consistência do Grau Atribuído:
+
+Se os achados mapeados forem apenas de nível INFO ou BAIXA, o Grau Atribuído não pode ser exibido como CRÍTICO.
+
+Defina a matriz de risco corretamente no código:
+
+Com falhas no SPF/DMARC e falta de HSTS/CSP, estas ocorrências DEVEM ser registradas na tabela "MATRIZ DE VULNERABILIDADES" sob as colunas MÉDIA ou ALTA, e não zeradas (0).
+
+Garantia de Tipografia e Clean Code:
+
+Aplique box-sizing: border-box; globalmente (*, *::before, *::after).
+
+Reduza o tamanho da fonte dos rótulos de métricas para 10pt ou 11pt para impedir que os números encostem nos textos dos cards.
+
+4. Estrutura Visual Esperada (Resultado Final):
+Página 1: Capa com identificação do cliente, ID do scan, domínio e nota resumo executivo.
+
+Página 2: Dashboard com Métricas da Auditoria (limpos, sem sobreposição), Gráficos/Barras de Cobertura e Matriz de Vulnerabilidades por Severidade alinhada.
+
+Página 3: Análise detalhada dos Cabeçalhos HTTP, Registros DNS e Subdomínios Mapeados.
+
+Página 4: Tecnologias Detectadas e Observações Técnicas.
+
+Página 5: Plano de Recomendações Priorizadas (P1, P2, P3), Assinatura e Declaração de Confidencialidade (LGPD).

@@ -1,0 +1,378 @@
+IMPLEMENT-SKILL-RADAR-P1
+Markdown
+# SKILL: Implementação do Core de Scanners e Worker Async (MCinfraTI Radar Security)
+
+## Contexto do Módulo
+Você deve implementar a arquitetura base de escaneamento de segurança e o processamento assíncrono para o **MCinfraTI Radar Security**. 
+
+A arquitetura utiliza **TypeScript / Node.js**, **CodeQL CLI** para análise estática (SAST) com parsing em **SARIF**, e **BullMQ + Redis** para fila de execução em segundo plano sem bloquear o servidor HTTP.
+
+---
+
+## 1. Contratos e Tipagens Base (`src/types/scanner.ts`)
+
+```typescript
+export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface Vulnerability {
+  id: string;
+  title: string;
+  description: string;
+  severity: Severity;
+  cveId?: string;
+  filePath?: string;
+  lineNumber?: number;
+  remediation?: string;
+  toolName: string;
+  rawDetails?: Record<string, any>;
+}
+
+export interface UnifiedScanResult {
+  scanId: string;
+  toolName: string;
+  target: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  executionTimeMs: number;
+  vulnerabilities: Vulnerability[];
+  error?: string;
+}
+
+export interface ScanOptions {
+  language?: string; // ex: javascript, python, java, go, cpp
+  querySuite?: string; // ex: codeql/javascript-queries
+  timeoutMs?: number;
+  extraArgs?: string[];
+}
+
+export interface IScanner {
+  scan(target: string, options?: ScanOptions): Promise<UnifiedScanResult>;
+}
+2. Parser SARIF (src/parsers/sarif.parser.ts)
+O parser é responsável por traduzir relatórios .sarif do CodeQL para a estrutura unificada da plataforma.
+
+TypeScript
+import { Vulnerability, Severity } from '../types/scanner';
+
+export class SarifParser {
+  public static parse(sarifContent: string, toolName: string = 'CodeQL'): Vulnerability[] {
+    if (!sarifContent || !sarifContent.trim()) {
+      return [];
+    }
+
+    const sarif = JSON.parse(sarifContent);
+    const vulnerabilities: Vulnerability[] = [];
+    const runs = sarif.runs || [];
+
+    for (const run of runs) {
+      const rulesMap = new Map<string, any>();
+      const rules = run.tool?.driver?.rules || [];
+
+      for (const rule of rules) {
+        rulesMap.set(rule.id, rule);
+      }
+
+      const results = run.results || [];
+
+      for (const result of results) {
+        const ruleId = result.ruleId || 'UNKNOWN_RULE';
+        const rule = rulesMap.get(ruleId) || {};
+        const location = result.locations?.[0]?.physicalLocation;
+        const filePath = location?.artifactLocation?.uri;
+        const lineNumber = location?.region?.startLine;
+
+        const sarifLevel = result.level || rule.defaultConfiguration?.level || 'warning';
+        const severity = SarifParser.mapSeverity(sarifLevel, rule.properties?.['problem.severity']);
+        const cveId = SarifParser.extractCve(rule);
+
+        vulnerabilities.push({
+          id: ruleId,
+          title: rule.shortDescription?.text || rule.name || ruleId,
+          description: result.message?.text || rule.fullDescription?.text || 'Sem descrição.',
+          severity,
+          cveId,
+          filePath,
+          lineNumber,
+          remediation: rule.help?.text || undefined,
+          toolName,
+          rawDetails: {
+            ruleProperties: rule.properties,
+            codeqlTags: rule.properties?.tags
+          }
+        });
+      }
+    }
+
+    return vulnerabilities;
+  }
+
+  private static mapSeverity(level: string, problemSeverity?: string): Severity {
+    if (problemSeverity) {
+      const prob = problemSeverity.toLowerCase();
+      if (prob === 'recommendation') return 'LOW';
+      if (prob === 'warning') return 'MEDIUM';
+      if (prob === 'error') return 'HIGH';
+      if (prob === 'critical') return 'CRITICAL';
+    }
+
+    switch (level.toLowerCase()) {
+      case 'error':
+        return 'HIGH';
+      case 'warning':
+        return 'MEDIUM';
+      case 'note':
+      case 'none':
+      default:
+        return 'LOW';
+    }
+  }
+
+  private static extractCve(rule: any): string | undefined {
+    const tags: string[] = rule.properties?.tags || [];
+    for (const tag of tags) {
+      if (tag.toLowerCase().startsWith('external/cwe/cwe-')) continue;
+      if (tag.toUpperCase().includes('CVE-')) {
+        const match = tag.match(/CVE-\d{4}-\d+/i);
+        if (match) return match[0].toUpperCase();
+      }
+    }
+    return undefined;
+  }
+}
+3. Adapter CodeQL (src/scanners/codeql.scanner.ts)
+Executa o CLI do CodeQL, gerencia o banco de dados temporário e utiliza o SarifParser.
+
+TypeScript
+import { IScanner, ScanOptions, UnifiedScanResult, Vulnerability } from '../types/scanner';
+import { SarifParser } from '../parsers/sarif.parser';
+import { execa } from 'execa';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { crypto } from 'node:crypto';
+
+export class CodeQLScanner implements IScanner {
+  private readonly toolName = 'CodeQL';
+
+  public async scan(targetPath: string, options: ScanOptions = {}): Promise<UnifiedScanResult> {
+    const startTime = Date.now();
+    const scanId = crypto.randomUUID();
+    
+    const language = options.language || 'javascript';
+    const timeoutMs = options.timeoutMs || 10 * 60 * 1000;
+    const querySuite = options.querySuite || `${language}-security-extended.qls`;
+
+    const tmpDir = path.join(os.tmpdir(), `radar_codeql_${scanId}`);
+    const dbPath = path.join(tmpDir, 'codeql-db');
+    const sarifOutputPath = path.join(tmpDir, 'results.sarif');
+
+    try {
+      await fs.mkdir(tmpDir, { recursive: true });
+
+      // 1. Criar DB CodeQL
+      await execa('codeql', [
+        'database',
+        'create',
+        dbPath,
+        `--language=${language}`,
+        `--source-root=${targetPath}`,
+        '--overwrite'
+      ], { timeout: timeoutMs });
+
+      // 2. Análise e geração do SARIF
+      await execa('codeql', [
+        'database',
+        'analyze',
+        dbPath,
+        querySuite,
+        '--format=sarif-latest',
+        `--output=${sarifOutputPath}`,
+        ...(options.extraArgs || [])
+      ], { timeout: timeoutMs });
+
+      // 3. Leitura e Parsing
+      const sarifRawContent = await fs.readFile(sarifOutputPath, 'utf-8');
+      const vulnerabilities: Vulnerability[] = SarifParser.parse(sarifRawContent, this.toolName);
+
+      return {
+        scanId,
+        toolName: this.toolName,
+        target: targetPath,
+        status: 'SUCCESS',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities
+      };
+
+    } catch (error: any) {
+      return {
+        scanId,
+        toolName: this.toolName,
+        target: targetPath,
+        status: (error.timedOut || error.killed) ? 'TIMEOUT' : 'FAILED',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities: [],
+        error: error.message || String(error)
+      };
+
+    } finally {
+      try {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        console.error(`[CodeQLScanner] Erro na limpeza temporária: ${tmpDir}`, cleanupError);
+      }
+    }
+  }
+}
+4. Registry de Scanners (src/scanners/scanner.registry.ts)
+TypeScript
+import { IScanner } from '../types/scanner';
+import { CodeQLScanner } from './codeql.scanner';
+
+export class ScannerRegistry {
+  private scanners: Map<string, IScanner> = new Map();
+
+  constructor() {
+    this.register('codeql', new CodeQLScanner());
+  }
+
+  public register(name: string, scanner: IScanner): void {
+    this.scanners.set(name.toLowerCase(), scanner);
+  }
+
+  public get(name: string): IScanner {
+    const scanner = this.scanners.get(name.toLowerCase());
+    if (!scanner) {
+      throw new Error(`Scanner '${name}' não foi registrado no MCinfraTI Radar Security.`);
+    }
+    return scanner;
+  }
+}
+5. Fila e Worker Async (src/queues/ e src/workers/)
+Fila (src/queues/scan.queue.ts)
+TypeScript
+import { Queue } from 'bullmq';
+import { ScanOptions } from '../types/scanner';
+
+export interface ScanJobData {
+  scanId: string;
+  targetPath: string;
+  toolName: string;
+  options?: ScanOptions;
+}
+
+export const REDIS_CONNECTION = {
+  host: process.env.REDIS_HOST || 'localhost',
+  port: Number(process.env.REDIS_PORT) || 6379,
+};
+
+export const scanQueue = new Queue<ScanJobData>('security-scans', {
+  connection: REDIS_CONNECTION,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: { age: 86400 },
+    removeOnFail: { age: 604800 },
+  },
+});
+Worker (src/workers/scan.worker.ts)
+TypeScript
+import { Worker, Job } from 'bullmq';
+import { REDIS_CONNECTION, ScanJobData } from '../queues/scan.queue';
+import { ScannerRegistry } from '../scanners/scanner.registry';
+import { UnifiedScanResult } from '../types/scanner';
+
+const registry = new ScannerRegistry();
+
+export const scanWorker = new Worker<ScanJobData, UnifiedScanResult>(
+  'security-scans',
+  async (job: Job<ScanJobData>): Promise<UnifiedScanResult> => {
+    const { scanId, targetPath, toolName, options } = job.data;
+    await job.updateProgress(10);
+
+    const scanner = registry.get(toolName);
+    const result = await scanner.scan(targetPath, options);
+
+    await job.updateProgress(100);
+
+    if (result.status === 'FAILED' || result.status === 'TIMEOUT') {
+      throw new Error(`Scan falhou: ${result.error}`);
+    }
+
+    return result;
+  },
+  {
+    connection: REDIS_CONNECTION,
+    concurrency: 2,
+  }
+);
+6. Dockerização & Deploy
+Dockerfile
+Dockerfile
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y \
+    curl git python3 default-jre unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CODEQL_VERSION="v2.16.0"
+RUN curl -L -o /tmp/codeql.zip "[https://github.com/github/codeql-cli-binaries/releases/download/$](https://github.com/github/codeql-cli-binaries/releases/download/$){CODEQL_VERSION}/codeql-linux64.zip" \
+    && unzip /tmp/codeql.zip -d /opt/ \
+    && rm /tmp/codeql.zip \
+    && ln -s /opt/codeql/codeql /usr/local/bin/codeql
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+EXPOSE 3000
+docker-compose.yml
+YAML
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mc-radar-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  api:
+    build: .
+    container_name: mc-radar-api
+    restart: always
+    command: node dist/api/server.js
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - scan_temp_data:/tmp
+
+  worker:
+    build: .
+    container_name: mc-radar-worker
+    restart: always
+    command: node dist/workers/scan.worker.js
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - scan_temp_data:/tmp
+
+volumes:
+  redis_data:
+  scan_temp_data:

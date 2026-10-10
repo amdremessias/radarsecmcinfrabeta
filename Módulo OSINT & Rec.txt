@@ -1,0 +1,311 @@
+🚀 TASK COMPLETA: Módulo "OSINT & Recon" — MCinfraTI Radar Security
+1. Wrapper da Engine OSINT (services/osint-brazuca/main.py)
+Crie um servidor FastAPI leve que servirá como API REST para executar os módulos de busca do osint-brazuca:
+
+Python
+from fastapi import FastAPI, HTTPException, Header, Depends
+from pydantic import BaseModel
+import subprocess
+import json
+import os
+
+app = FastAPI(title="OSINT Brazuca Engine API")
+
+API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "default_secret")
+
+def verify_token(x_api_token: str = Header(...)):
+    if x_api_token != API_SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
+
+class SearchRequest(BaseModel):
+    target_type: str  # CPF, CNPJ, EMAIL, PHONE, DOMAIN, NAME
+    value: str
+
+@app.post("/search")
+async def execute_osint_search(req: SearchRequest, dependencies=[Depends(verify_token)]):
+    try:
+        # Chama os scripts internos do osint-brazuca com base no tipo de alvo
+        # Exemplo simulado de chamada via sub-processo ou módulo importado
+        result = {
+            "targetType": req.target_type,
+            "value": req.value,
+            "status": "success",
+            "findings": {
+                "cadastral": {"identificacao": req.value, "status_receita": "ATIVA"},
+                "leaks": ["Vazamento_2023_BaseGeral", "ComboList_2024"],
+                "digitalPresence": ["LinkedIn", "Jusbrasil", "Registro.br"]
+            }
+        }
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+2. Container Docker do Servidor (services/osint-brazuca/Dockerfile)
+Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instala dependências do sistema necessárias para requisições e raspagem
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8001
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+3. Integração ao docker-compose.yml
+YAML
+  osint-brazuca-engine:
+    container_name: mcinfrati-osint-engine
+    build:
+      context: ./services/osint-brazuca
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - API_SECRET_TOKEN=${OSINT_ENGINE_SECRET:-mcinfrati_osint_secret_2026}
+    volumes:
+      - osint_cache_data:/app/data
+    networks:
+      - mcinfrati-network
+4. Modelagem do Banco de Dados (prisma/schema.prisma)
+Snippet de código
+enum OsintTargetType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  DOMAIN
+  NAME
+}
+
+model OsintScan {
+  id            String          @id @default(uuid())
+  targetType    OsintTargetType
+  targetValue   String
+  status        ScanStatus      @default(PENDING)
+  rawResult     Json?
+  summary       String?         @db.Text
+  executionTime Int?            // Tempo em milissegundos
+  createdAt     DateTime        @default(now())
+
+  @@index([targetValue])
+  @@index([targetType])
+  @@map("osint_scans")
+}
+5. Rota de API no Backend Next.js (src/app/api/osint/investigate/route.ts)
+TypeScript
+import { NextResponse } from 'next/server';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export async function POST(req: Request) {
+  try {
+    const { targetType, value } = await req.json();
+
+    if (!targetType || !value) {
+      return NextResponse.json({ error: 'Parâmetros inválidos.' }, { status: 400 });
+    }
+
+    const startTime = Date.now();
+
+    // 1. Registra a busca como PENDING no banco de dados
+    const scanRecord = await prisma.osintScan.create({
+      data: {
+        targetType,
+        targetValue: value,
+        status: 'PROCESSING',
+      },
+    });
+
+    // 2. Faz a chamada ao container Python dedicado
+    const response = await fetch('http://osint-brazuca-engine:8001/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Token': process.env.OSINT_ENGINE_SECRET || 'mcinfrati_osint_secret_2026',
+      },
+      body: JSON.stringify({ target_type: targetType, value }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Falha ao obter resposta da engine de OSINT.');
+    }
+
+    const resultData = await response.json();
+    const executionTime = Date.now() - startTime;
+
+    // 3. Atualiza o registro com os resultados retornados
+    const updatedRecord = await prisma.osintScan.update({
+      where: { id: scanRecord.id },
+      data: {
+        status: 'COMPLETED',
+        rawResult: resultData,
+        executionTime,
+      },
+    });
+
+    return NextResponse.json(updatedRecord);
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+6. Componente Frontend Interativo (src/components/OsintReconView.tsx)
+TypeScript
+'use client';
+
+import React, { useState } from 'react';
+import { Search, ShieldAlert, Loader2, Database, Globe, UserCheck, FileText } from 'lucide-react';
+
+export const OsintReconView = () => {
+  const [targetType, setTargetType] = useState('CNPJ');
+  const [targetValue, setTargetValue] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<any>(null);
+
+  const handleSearch = async () => {
+    if (!targetValue) return;
+    setLoading(true);
+    try {
+      const response = await fetch('/api/osint/investigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetType, value: targetValue }),
+      });
+      const data = await response.json();
+      setResults(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 text-slate-100">
+      <div className="border-b border-slate-800 pb-4">
+        <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
+          <Search className="w-7 h-7 text-blue-500" />
+          OSINT & Recon (Brazuca Engine)
+        </h1>
+        <p className="text-sm text-slate-400 mt-1">
+          Investigação de fontes abertas sobre alvos brasileiros (CPF, CNPJ, Domínios, E-mails e Telefones).
+        </p>
+      </div>
+
+      {/* BARRA DE PESQUISA */}
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex gap-3">
+        <select
+          value={targetType}
+          onChange={(e) => setTargetType(e.target.value)}
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+        >
+          <option value="CNPJ">CNPJ</option>
+          <option value="CPF">CPF</option>
+          <option value="EMAIL">E-mail</option>
+          <option value="PHONE">Telefone</option>
+          <option value="DOMAIN">Domínio / IP</option>
+          <option value="NAME">Nome Completo</option>
+        </select>
+
+        <input
+          type="text"
+          placeholder={`Digite o ${targetType}...`}
+          value={targetValue}
+          onChange={(e) => setTargetValue(e.target.value)}
+          className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+        />
+
+        <button
+          onClick={handleSearch}
+          disabled={loading}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          Investigar
+        </button>
+      </div>
+
+      {/* DASHBOARD DE RESULTADOS */}
+      {results && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-blue-400">
+              <UserCheck className="w-4 h-4" /> Dados Cadastrais
+            </h3>
+            <pre className="text-xs bg-slate-950 p-3 rounded text-slate-300 font-mono overflow-auto max-h-48">
+              {JSON.stringify(results.rawResult?.findings?.cadastral || {}, null, 2)}
+            </pre>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-amber-400">
+              <Database className="w-4 h-4" /> Vazamentos Mencionados
+            </h3>
+            <ul className="text-xs space-y-1 text-slate-300">
+              {results.rawResult?.findings?.leaks?.map((leak: string, idx: number) => (
+                <li key={idx} className="bg-slate-950 px-2 py-1 rounded border border-slate-800">
+                  {leak}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-emerald-400">
+              <Globe className="w-4 h-4" /> Presença Digital
+            </h3>
+            <ul className="text-xs space-y-1 text-slate-300">
+              {results.rawResult?.findings?.digitalPresence?.map((site: string, idx: number) => (
+                <li key={idx} className="bg-slate-950 px-2 py-1 rounded border border-slate-800">
+                  {site}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+7. Inclusão das Evidências de OSINT no Relatório PDF
+Atualize o template Handlebars ou o gerador de PDF via Puppeteer (src/services/pdf-report.service.ts) para incluir a seção de inteligência de alvos:
+
+HTML
+<!-- SEÇÃO DE OSINT & RECON NO PDF -->
+<div class="page-break"></div>
+<h3 class="text-sm font-bold text-blue-400 mb-2">Relatório de Inteligência de Fontes Abertas (OSINT)</h3>
+<p class="text-slate-400 mb-4">Investigação automatizada efetuada pela engine dedicada MCinfraTI OSINT-Brazuca.</p>
+
+<div class="bg-slate-900 p-4 rounded border border-slate-800 mb-4">
+  <p class="text-slate-200"><strong>Alvo Investigado:</strong> {{osintData.targetValue}} ({{osintData.targetType}})</p>
+  <p class="text-slate-200"><strong>Tempo de Resposta:</strong> {{osintData.executionTime}} ms</p>
+</div>
+
+<table class="w-full text-left text-slate-300 bg-slate-800 rounded border border-slate-700">
+  <thead class="bg-slate-900 text-slate-400 uppercase text-[10px]">
+    <tr>
+      <th class="p-2">Categoria</th>
+      <th class="p-2">Registros / Fontes Encontradas</th>
+    </tr>
+  </thead>
+  <tbody class="divide-y divide-slate-700 text-xs">
+    <tr>
+      <td class="p-2 font-bold text-amber-400">Vazamentos Conhecidos</td>
+      <td class="p-2 font-mono">{{osintData.rawResult.findings.leaks}}</td>
+    </tr>
+    <tr>
+      <td class="p-2 font-bold text-emerald-400">Presença Digital</td>
+      <td class="p-2 font-mono">{{osintData.rawResult.findings.digitalPresence}}</td>
+    </tr>
+  </tbody>
+</table>

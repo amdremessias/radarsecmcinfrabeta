@@ -1,0 +1,253 @@
+Markdown
+# TASK: Implementação de Relatório Detalhado de Segurança e Exportação para PDF
+
+## Objetivo
+Implementar um gerador de relatórios técnicos e executivos em PDF no backend/frontend do **MCinfraTI Radar Security**. O relatório deve elevar o nível visual da tela atual, incluindo indicadores de risco, resumos executivos, matriz de severidade e ações corretivas detalhadas.
+
+---
+
+## 1. Estrutura e Seções do Relatório (Layout / UX)
+
+O relatório em PDF deve conter as seguintes seções estruturadas:
+
+1. **Capa Executiva:**
+   - Logotipo `MCinfraTI Radar Security`.
+   - Alvo analisado (URL/Domínio ou Repositório).
+   - Data/Hora de execução, Duração e ID do Scan.
+   - **Score de Segurança Big Number** (Ex: `27/100`) e a **Nota de Segurança** (Ex: `Grade F` em destaque vermelho).
+
+2. **Sumário Executivo (Dashboard Metric Cards):**
+   - Cards com contadores por categoria:
+     - **Cabeçalhos de Segurança:** `0/6` (Ex: Falhas de HSTS, CSP, X-Frame).
+     - **Cookies:** Proteções `HttpOnly`, `Secure`, `SameSite`.
+     - **TLS / SSL:** Validade de certificados, ciphers e protocolos.
+     - **DNS & Subdomínios:** Registros SPF/DMARC e enumeração.
+     - **Tecnologias & Vulnerabilidades:** Softwares identificados e CVEs detectados.
+   - **Matriz de Vulnerabilidades:** Gráfico/Tabela com contagem por severidade (`CRÍTICO`, `ALTO`, `MÉDIO`, `BAIXO`, `INFO`).
+
+3. **Detalhamento Técnico por Categoria:**
+   - Tabelas estilizadas contendo:
+     - **Item / Header / Recurso**
+     - **Status:** Badge colorido (Passou = Verde, Falhou = Vermelho, Alerta = Amarelo).
+     - **Impacto / Descrição:** Explicação clara do risco.
+     - **Recomendação de Correção:** Instruções técnicas e trechos de código/configuração recomendados.
+
+4. **Rodapé de Compliance e Assinatura:**
+   - Declaração de confidencialidade e dados de contato da **MCinfraTI**.
+
+---
+
+## 2. Arquitetura do Gerador de PDF (TypeScript + Puppeteer)
+
+Utilize um template em **HTML5 + Tailwind CSS (via CDN ou inline)** renderizado no servidor via `puppeteer` para garantir fidelidade visual ao layout web.
+
+### Dependências
+```bash
+npm install puppeteer handlebars
+npm install --save-dev @types/handlebars
+3. Template HTML / Handlebars do Relatório (src/templates/report.hbs)
+HTML
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Relatório de Segurança - MCinfraTI Radar Security</title>
+  <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+  <style>
+    @page { margin: 0; size: A4; }
+    body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #f8fafc; }
+    .page-break { page-break-after: always; }
+    .grade-F { color: #ef4444; border-color: #ef4444; }
+    .grade-A { color: #22c55e; border-color: #22c55e; }
+  </style>
+</head>
+<body class="p-8">
+
+  <!-- CAPA E CABEÇALHO PRINCIPAL -->
+  <div class="flex justify-between items-center border-b border-slate-700 pb-6 mb-8">
+    <div>
+      <h1 class="text-2xl font-bold text-blue-500">MCinfraTI <span class="text-white">Radar Security</span></h1>
+      <p class="text-sm text-slate-400">Relatório Técnico de Análise de Vulnerabilidades</p>
+    </div>
+    <div class="text-right">
+      <span class="text-xs text-slate-400">Alvo Analisado:</span>
+      <p class="text-md font-mono text-blue-400 font-semibold">{{targetUrl}}</p>
+    </div>
+  </div>
+
+  <!-- DASHBOARD / SCORE BOARD -->
+  <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-8 flex justify-between items-center">
+    <div>
+      <p class="text-sm text-slate-400">Pontuação Geral de Segurança</p>
+      <div class="flex items-baseline space-x-2">
+        <span class="text-4xl font-extrabold text-white">{{score}}</span>
+        <span class="text-slate-400">/ 100 pontos</span>
+      </div>
+      <p class="text-xs text-slate-500 mt-2">Concluído em: {{executionDate}} | Duração: {{duration}}</p>
+    </div>
+    
+    <!-- NOTA / GRADE -->
+    <div class="flex flex-col items-center justify-center border-4 rounded-2xl w-24 h-24 font-black text-5xl grade-{{grade}}">
+      {{grade}}
+    </div>
+  </div>
+
+  <!-- CARDS DE RESUMO DE CATEGORIAS -->
+  <div class="grid grid-cols-4 gap-4 mb-8">
+    <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+      <span class="text-xs text-slate-400 block">Headers de Segurança</span>
+      <span class="text-xl font-bold text-white">{{headersPassed}}/6</span>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+      <span class="text-xs text-slate-400 block">Cookies Seguros</span>
+      <span class="text-xl font-bold text-white">{{cookiesCount}}</span>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+      <span class="text-xs text-slate-400 block">Tecnologias</span>
+      <span class="text-xl font-bold text-white">{{techCount}}</span>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+      <span class="text-xs text-slate-400 block">Subdomínios</span>
+      <span class="text-xl font-bold text-white">{{subdomainsCount}}</span>
+    </div>
+  </div>
+
+  <!-- TABELA DE CABEÇALHOS DE SEGURANÇA -->
+  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8">
+    <div class="p-4 border-b border-slate-700 bg-slate-800/50">
+      <h2 class="text-lg font-semibold text-white">Análise de Cabeçalhos de Segurança (HTTP Headers)</h2>
+    </div>
+    <table class="w-full text-left text-sm text-slate-300">
+      <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+        <tr>
+          <th class="p-4">Header</th>
+          <th class="p-4">Status</th>
+          <th class="p-4">Recomendação & Correção</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700">
+        {{#each headersList}}
+        <tr>
+          <td class="p-4 font-mono text-blue-300">{{this.name}}</td>
+          <td class="p-4">
+            {{#if this.passed}}
+              <span class="bg-green-500/10 text-green-400 border border-green-500/20 px-2.5 py-1 rounded-full text-xs font-semibold">OK</span>
+            {{else}}
+              <span class="bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-1 rounded-full text-xs font-semibold">FALHA</span>
+            {{/if}}
+          </td>
+          <td class="p-4 text-xs text-slate-300">{{this.recommendation}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- RODAPÉ -->
+  <div class="text-center text-xs text-slate-500 border-t border-slate-800 pt-4">
+    <p>MCinfraTI Radar Security — Documento Gerado Automatizado — Uso Confidencial</p>
+  </div>
+
+</body>
+</html>
+4. Serviço de Geração do PDF em Node.js (src/services/pdf-report.service.ts)
+TypeScript
+import puppeteer from 'puppeteer';
+import handlebars from 'handlebars';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+
+export interface ReportData {
+  targetUrl: string;
+  score: number;
+  grade: string;
+  executionDate: string;
+  duration: string;
+  headersPassed: number;
+  cookiesCount: number;
+  techCount: number;
+  subdomainsCount: number;
+  headersList: Array<{
+    name: string;
+    passed: boolean;
+    recommendation: string;
+  }>;
+}
+
+export class PdfReportService {
+  public static async generateReport(data: ReportData): Promise<Buffer> {
+    // 1. Carrega e compila o template Handlebars
+    const templatePath = path.join(__dirname, '../templates/report.hbs');
+    const htmlTemplate = await fs.readFile(templatePath, 'utf-8');
+    const compiledTemplate = handlebars.compile(htmlTemplate);
+    const htmlContent = compiledTemplate(data);
+
+    // 2. Inicializa o Puppeteer para renderização
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+
+    // Define o conteúdo da página e aguarda o carregamento das fontes/estilos
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+
+    // 3. Exporta para PDF em formato A4
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: {
+        top: '20px',
+        right: '20px',
+        bottom: '20px',
+        left: '20px'
+      }
+    });
+
+    await browser.close();
+    return Buffer.from(pdfBuffer);
+  }
+}
+5. Rota na API para Download do PDF (src/api/routes/report.route.ts)
+TypeScript
+import { Router } from 'express';
+import { PdfReportService } from '../../services/pdf-report.service';
+
+const router = Router();
+
+router.get('/api/scans/:scanId/report/pdf', async (req, res) => {
+  try {
+    // Mock ou busca do banco de dados com base no scanId
+    const reportData = {
+      targetUrl: '[https://olhardigitalseg.online](https://olhardigitalseg.online)',
+      score: 27,
+      grade: 'F',
+      executionDate: '06 de set às 00:29',
+      duration: '2.0s',
+      headersPassed: 0,
+      cookiesCount: 0,
+      techCount: 1,
+      subdomainsCount: 0,
+      headersList: [
+        { name: 'strict-transport-security', passed: false, recommendation: 'Use HSTS to enforce HTTPS (e.g. max-age=31536000; includeSubDomains)' },
+        { name: 'content-security-policy', passed: false, recommendation: 'Add a Content-Security-Policy header to prevent XSS and data injection' },
+        { name: 'x-frame-options', passed: false, recommendation: 'Set X-Frame-Options to DENY or SAMEORIGIN to prevent clickjacking' },
+        { name: 'x-content-type-options', passed: false, recommendation: 'Set X-Content-Type-Options to nosniff to prevent MIME sniffing' },
+        { name: 'permissions-policy', passed: false, recommendation: 'Add a Permissions-Policy header to restrict browser features' },
+        { name: 'referrer-policy', passed: false, recommendation: 'Set Referrer-Policy to strict-origin-when-cross-origin' }
+      ]
+    };
+
+    const pdfBuffer = await PdfReportService.generateReport(reportData);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=relatorio-radar-${req.params.scanId}.pdf`);
+    return res.send(pdfBuffer);
+
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;

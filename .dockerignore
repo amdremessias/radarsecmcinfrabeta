@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+.gitignore
+server.log
+Dockerfile*
+docker-compose.yml
+.dockerignore
+.env
+.env.local
+.env*.local
+deploy/
+backups/
+releases/
+*.tar.gz
+README*.md
+*.log

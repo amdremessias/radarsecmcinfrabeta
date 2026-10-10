@@ -1,0 +1,502 @@
+Markdown
+# TASK MÁSTER: Implementação Final & Testes — MCinfraTI Radar Security (SAST + OSINT Brazuca + PDF)
+
+## 🎯 Objetivo Executivo
+Implementar e validar o ecossistema completo do **MCinfraTI Radar Security**:
+1. **Infraestrutura e Containers:** Stack Docker Compose com container Python dedicado (`osint-brazuca-engine`) em rede isolada.
+2. **Modelagem de Dados (Prisma ORM):** Schemas otimizados com suporte a JSON, índices e deleção em cascata.
+3. **Endpoints de API & Validação:** Rotas Next.js robustas com timeout de 15 segundos e tratamento de erros.
+4. **Interface (UI) & Exportações:** Dashboard administrativo em abas (SAST / OSINT) com cópia de GitHub Issues em 1 clique e exportação de PDF.
+5. **Suíte de Testes:** Testes de integração para validação do pipeline.
+
+---
+
+## 🏗️ 1. INFRAESTRUTURA & CONTAINERS (`docker-compose.yml`)
+
+```yaml
+version: '3.8'
+
+services:
+  # Servidor principal da plataforma
+  mcinfrati-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/mcinfrati_db?schema=public
+      - OSINT_ENGINE_URL=http://osint-brazuca-engine:8001
+      - OSINT_ENGINE_SECRET=${OSINT_ENGINE_SECRET:-mcinfrati_osint_secret_2026}
+    depends_on:
+      - postgres
+      - osint-brazuca-engine
+    networks:
+      - mcinfrati-network
+
+  # Database
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mcinfrati_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - mcinfrati-network
+
+  # Microserviço OSINT Dedicado
+  osint-brazuca-engine:
+    container_name: mcinfrati-osint-engine
+    build:
+      context: ./services/osint-brazuca
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - PORT=8001
+      - API_SECRET_TOKEN=${OSINT_ENGINE_SECRET:-mcinfrati_osint_secret_2026}
+    volumes:
+      - osint_cache_data:/app/data
+    networks:
+      - mcinfrati-network
+
+volumes:
+  pgdata:
+  osint_cache_data:
+
+networks:
+  mcinfrati-network:
+    driver: bridge
+🐍 2. WRAPPER DA ENGINE OSINT PYTHON (services/osint-brazuca/)
+services/osint-brazuca/Dockerfile
+Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8001
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+services/osint-brazuca/requirements.txt
+Plaintext
+fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.4
+requests==2.31.0
+services/osint-brazuca/main.py
+Python
+from fastapi import FastAPI, HTTPException, Header, Depends
+from pydantic import BaseModel
+import os
+
+app = FastAPI(title="MCinfraTI OSINT Brazuca Engine")
+API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "mcinfrati_osint_secret_2026")
+
+def verify_token(x_api_token: str = Header(...)):
+    if x_api_token != API_SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
+
+class SearchRequest(BaseModel):
+    target_type: str  # CPF, CNPJ, EMAIL, PHONE, DOMAIN, NAME
+    value: str
+
+@app.post("/search")
+async def execute_osint_search(req: SearchRequest, dependencies=[Depends(verify_token)]):
+    try:
+        # Lógica de integração com osint-brazuca
+        return {
+            "targetType": req.target_type,
+            "value": req.value,
+            "status": "success",
+            "findings": {
+                "cadastral": {"identificacao": req.value, "status_receita": "ATIVA"},
+                "leaks": ["Vazamento_2023_BaseGeral", "ComboList_2024"],
+                "digitalPresence": ["LinkedIn", "Jusbrasil", "Registro.br"]
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+💾 3. SCHEMA COMPLETO DO BANCO DE DADOS (prisma/schema.prisma)
+Snippet de código
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum ScanStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum SeverityLevel {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum OsintTargetType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  DOMAIN
+  NAME
+}
+
+model Scan {
+  id              String          @id @default(uuid())
+  target          String
+  status          ScanStatus      @default(PENDING)
+  score           Int?
+  grade           String?         @db.VarChar(2)
+  executionTimeMs Int?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  vulnerabilities Vulnerability[]
+  reports         Report[]
+
+  @@index([target])
+  @@index([status])
+  @@map("scans")
+}
+
+model Vulnerability {
+  id            String        @id @default(uuid())
+  scanId        String
+  ruleId        String
+  title         String
+  description   String        @db.Text
+  severity      SeverityLevel
+  filePath      String?
+  lineNumber    Int?
+  remediation   String?       @db.Text
+  toolName      String
+  rawDetails    Json?
+  createdAt     DateTime      @default(now())
+
+  scan          Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([severity])
+  @@map("vulnerabilities")
+}
+
+model OsintScan {
+  id            String          @id @default(uuid())
+  targetType    OsintTargetType
+  targetValue   String
+  status        ScanStatus      @default(PENDING)
+  rawResult     Json?
+  executionTime Int?
+  createdAt     DateTime        @default(now())
+
+  @@index([targetValue])
+  @@index([targetType])
+  @@map("osint_scans")
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  scanId      String
+  format      String   @default("pdf")
+  fileUrl     String?
+  createdAt   DateTime @default(now())
+
+  scan        Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@map("reports")
+}
+🌐 4. API ROUTE NEXT.JS COM TIMEOUT E FALLBACK (src/app/api/osint/investigate/route.ts)
+TypeScript
+import { NextResponse } from 'next/server';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export async function POST(req: Request) {
+  try {
+    const { targetType, value } = await req.json();
+
+    if (!targetType || !value) {
+      return NextResponse.json({ error: 'Parâmetros inválidos.' }, { status: 400 });
+    }
+
+    const startTime = Date.now();
+
+    // 1. Cria o registro PENDING
+    const scanRecord = await prisma.osintScan.create({
+      data: {
+        targetType,
+        targetValue: value,
+        status: 'PROCESSING',
+      },
+    });
+
+    // 2. Chamada com AbortController para Timeout de 15 segundos
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const engineUrl = process.env.OSINT_ENGINE_URL || 'http://osint-brazuca-engine:8001';
+    const secret = process.env.OSINT_ENGINE_SECRET || 'mcinfrati_osint_secret_2026';
+
+    let resultData = null;
+    let scanStatus: 'COMPLETED' | 'FAILED' = 'COMPLETED';
+
+    try {
+      const response = await fetch(`${engineUrl}/search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Token': secret,
+        },
+        body: JSON.stringify({ target_type: targetType, value }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) throw new Error('Falha na resposta do container OSINT.');
+      resultData = await response.json();
+    } catch (err: any) {
+      scanStatus = 'FAILED';
+      resultData = { error: err.name === 'AbortError' ? 'Timeout de consulta excedido (15s).' : err.message };
+    }
+
+    const executionTime = Date.now() - startTime;
+
+    // 3. Atualiza o registro no banco
+    const updatedRecord = await prisma.osintScan.update({
+      where: { id: scanRecord.id },
+      data: {
+        status: scanStatus,
+        rawResult: resultData,
+        executionTime,
+      },
+    });
+
+    return NextResponse.json(updatedRecord, { status: scanStatus === 'FAILED' ? 502 : 200 });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+💻 5. INTERFACE DE USUÁRIO (UI) (src/app/admin/security/page.tsx)
+TypeScript
+'use client';
+
+import React, { useState } from 'react';
+import { ShieldAlert, Search, Loader2, Database, Globe, UserCheck, Check, Copy } from 'lucide-react';
+
+export default function SecurityAdminPanel() {
+  const [activeTab, setActiveTab] = useState<'sast' | 'osint'>('sast');
+  const [targetType, setTargetType] = useState('CNPJ');
+  const [targetValue, setTargetValue] = useState('');
+  const [osintLoading, setOsintLoading] = useState(false);
+  const [osintResult, setOsintResult] = useState<any>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleOsintSearch = async () => {
+    if (!targetValue) return;
+    setOsintLoading(true);
+    try {
+      const res = await fetch('/api/osint/investigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetType, value: targetValue }),
+      });
+      const data = await res.json();
+      setOsintResult(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setOsintLoading(false);
+    }
+  };
+
+  const copyAsMarkdown = () => {
+    if (!osintResult) return;
+    const md = `### [OSINT] Investigação de Alvo (${osintResult.targetType})
+**Valor:** \`${osintResult.targetValue}\`
+**Status:** \`${osintResult.status}\`
+
+\`\`\`json
+${JSON.stringify(osintResult.rawResult, null, 2)}
+\`\`\``;
+    navigator.clipboard.writeText(md);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-8 space-y-6">
+      <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <ShieldAlert className="w-7 h-7 text-blue-500"/>
+          MCinfraTI Radar Security
+        </h1>
+        <div className="flex gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800">
+          <button
+            onClick={() => setActiveTab('sast')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'sast' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Análise Profunda (SAST)
+          </button>
+          <button
+            onClick={() => setActiveTab('osint')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'osint' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            OSINT & Recon
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'sast' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+          <h2 className="text-lg font-semibold text-slate-200">Submeter Código para Auditoria Estática</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <input
+              type="text"
+              placeholder="URL do Repositório Git"
+              className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <input
+              type="text"
+              placeholder="Branch (default: main)"
+              className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <button className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
+            Iniciar Varredura SAST
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'osint' && (
+        <div className="space-y-6">
+          <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex gap-3">
+            <select
+              value={targetType}
+              onChange={(e) => setTargetType(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="CNPJ">CNPJ</option>
+              <option value="CPF">CPF</option>
+              <option value="EMAIL">E-mail</option>
+              <option value="PHONE">Telefone</option>
+              <option value="DOMAIN">Domínio / IP</option>
+            </select>
+            <input
+              type="text"
+              placeholder={`Digite o ${targetType}...`}
+              value={targetValue}
+              onChange={(e) => setTargetValue(e.target.value)}
+              className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <button
+              onClick={handleOsintSearch}
+              disabled={osintLoading}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+            >
+              {osintLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Search className="w-4 h-4"/>}
+              Investigar Alvo
+            </button>
+          </div>
+
+          {osintResult && (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-slate-400">
+                  Tempo de resposta: {osintResult.executionTime}ms
+                </span>
+                <button
+                  onClick={copyAsMarkdown}
+                  className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400"/> : <Copy className="w-3.5 h-3.5"/>}
+                  {copied ? 'Copiado!' : 'Copiar p/ GitHub Issue'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+                  <h3 className="text-sm font-semibold text-blue-400 flex items-center gap-2">
+                    <UserCheck className="w-4 h-4"/> Dados Cadastrais
+                  </h3>
+                  <pre className="text-xs bg-slate-950 p-3 rounded font-mono text-slate-300">
+                    {JSON.stringify(osintResult.rawResult?.findings?.cadastral || {}, null, 2)}
+                  </pre>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+                  <h3 className="text-sm font-semibold text-amber-400 flex items-center gap-2">
+                    <Database className="w-4 h-4"/> Leaks Identificados
+                  </h3>
+                  <pre className="text-xs bg-slate-950 p-3 rounded font-mono text-slate-300">
+                    {JSON.stringify(osintResult.rawResult?.findings?.leaks || [], null, 2)}
+                  </pre>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
+                  <h3 className="text-sm font-semibold text-emerald-400 flex items-center gap-2">
+                    <Globe className="w-4 h-4"/> Presença Digital
+                  </h3>
+                  <pre className="text-xs bg-slate-950 p-3 rounded font-mono text-slate-300">
+                    {JSON.stringify(osintResult.rawResult?.findings?.digitalPresence || [], null, 2)}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+🧪 6. TESTES DE INTEGRAÇÃO (tests/integration/osint.test.ts)
+TypeScript
+import request from 'supertest';
+
+describe('POST /api/osint/investigate', () => {
+  it('deve retornar 400 se parâmetros forem omitidos', async () => {
+    const res = await request('http://localhost:3000')
+      .post('/api/osint/investigate')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('deve processar consulta de CNPJ com sucesso', async () => {
+    const res = await request('http://localhost:3000')
+      .post('/api/osint/investigate')
+      .send({ targetType: 'CNPJ', value: '00000000000191' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('id');
+    expect(res.body.status).toBe('COMPLETED');
+    expect(res.body.rawResult).toHaveProperty('findings');
+  });
+});
+📋 CRITÉRIOS DE ACEITE E CHECKLIST DE VALIDAÇÃO
+[ ] Subir a stack inteira via docker compose up -d --build.
+
+[ ] Rodar as migrations do Prisma com npx prisma migrate dev.
+
+[ ] Testar a pesquisa OSINT na UI e validar o tempo de execução e gravação do registro no PostgreSQL.
+
+[ ] Validar o botão de cópia formatada em Markdown para o GitHub.
+
+[ ] Rodar a suíte de testes com npm test.

@@ -1,0 +1,107 @@
+Estrutura do docker-compose.yml otimizada para a arquitetura do MCinfraTI Radar Security.
+
+Ela separa a API HTTP dos Workers e configura as dependências necessárias para a execução do CodeQL e do Redis.
+
+docker-compose.yml
+YAML
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis: Fila de Tarefas para o BullMQ
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: mc-radar-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # API Server: Recebe requisições HTTP e enfileira os Scans
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mc-radar-api
+    restart: always
+    command: node dist/api/server.js
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - scan_temp_data:/tmp
+
+  # ---------------------------------------------------------------------------
+  # Worker BullMQ: Processa os Scans pesados em segundo plano (CodeQL / Scanners)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mc-radar-worker
+    restart: always
+    command: node dist/workers/scan.worker.js
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Compartilha o diretório de arquivos temporários para montagem/análise dos alvos
+      - scan_temp_data:/tmp
+
+volumes:
+  redis_data:
+    driver: local
+  scan_temp_data:
+    driver: local
+Dockerfile Recomendado
+Para que o CodeQL e os demais scanners funcionem dentro do container do Worker, o CLI do CodeQL deve estar instalado na imagem base.
+
+Dockerfile
+FROM node:20-slim
+
+# Instala dependências básicas do SO, Git e Java (necessário para o CodeQL CLI)
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    python3 \
+    default-jre \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalação do CodeQL CLI
+ENV CODEQL_VERSION="v2.16.0"
+RUN curl -L -o /tmp/codeql.zip "https://github.com/github/codeql-cli-binaries/releases/download/${CODEQL_VERSION}/codeql-linux64.zip" \
+    && unzip /tmp/codeql.zip -d /opt/ \
+    && rm /tmp/codeql.zip \
+    && ln -s /opt/codeql/codeql /usr/local/bin/codeql
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+EXPOSE 3000

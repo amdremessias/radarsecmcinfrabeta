@@ -1,0 +1,138 @@
+# MCinfraTI - Radar Security
+# Arquivo de PRODUÇÃO para VPS (standalone). NÃO é um override: define a stack completa.
+# - Secrets obrigatórios via .env (cp .env.example .env)
+# - App escuta apenas em 127.0.0.1:8775 (coloque nginx/caddy na frente com HTTPS)
+# - Para usar outra porta na VPS, defina APP_PORT no .env (ex.: APP_PORT=9900)
+# - Banco PostgreSQL e Redis NÃO expõem porta na rede pública
+# - SCAN_ASYNC=true ativa a fila BullMQ (redis + worker); padrão false = síncrono
+# - OSINT: o serviço osint-worker monta /var/run/docker.sock e executa containers
+#   Sherlock (presença, ~413 sites) e/ou Maigret (dossier com nome/bio/foto, ~8K
+#   sites) via Docker Engine API (sem CLI). Requer acesso ao socket do host.
+# - By: m3ss14s A L M Todos os direitos reservados - despoiled apenas e unicamente para CSI2 9/9/20-16h40
+# Uso: docker compose -f docker-compose.prod.yml up -d --build
+
+name: radar-security
+
+services:
+  radar:
+    build: .
+    image: radar-security-radar:${VERSION:-latest}
+    container_name: radar-security
+    ports:
+      - "127.0.0.1:${APP_PORT:-8775}:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-radar}:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}@db:5432/${POSTGRES_DB:-radar}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?Defina NEXTAUTH_URL no .env}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Defina NEXTAUTH_SECRET no .env (openssl rand -base64 32)}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Defina ADMIN_EMAIL no .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Defina ADMIN_PASSWORD forte no .env}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SCAN_ASYNC: ${SCAN_ASYNC:-false}
+      OSINT_ASYNC: ${OSINT_ASYNC:-true}
+      HARVESTER_API_ENABLED: ${HARVESTER_API_ENABLED:-false}
+      HARVESTER_KEYS_SECRET: ${HARVESTER_KEYS_SECRET:-}
+      HARVESTER_IMAGE: ${HARVESTER_IMAGE:-ghcr.io/laramies/theharvester:latest}
+      HARVESTER_MEMORY: ${HARVESTER_MEMORY:-1g}
+      HARVESTER_CPUS: ${HARVESTER_CPUS:-1.0}
+      HARVESTER_TIMEOUT_MS: ${HARVESTER_TIMEOUT_MS:-900000}
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+
+  worker:
+    image: radar-security-radar:${VERSION:-latest}
+    container_name: radar-security-worker
+    command: ["node", "dist/worker.cjs"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-radar}:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}@db:5432/${POSTGRES_DB:-radar}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      disable: true
+
+  osint-worker:
+    image: radar-security-radar:${VERSION:-latest}
+    container_name: radar-security-osint-worker
+    command: ["node", "dist/osint-worker.cjs"]
+    # Necessário para acessar /var/run/docker.sock (grupo docker varia por host).
+    user: root
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-radar}:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}@db:5432/${POSTGRES_DB:-radar}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NODE_ENV: production
+      OSINT_ASYNC: "true"
+      SHERLOCK_IMAGE: ${SHERLOCK_IMAGE:-sherlock/sherlock:latest}
+      MAIGRET_IMAGE: ${MAIGRET_IMAGE:-soxoj/maigret:latest}
+      SHERLOCK_MEMORY: ${SHERLOCK_MEMORY:-512m}
+      SHERLOCK_CPUS: ${SHERLOCK_CPUS:-1.0}
+      SHERLOCK_TIMEOUT_MS: ${SHERLOCK_TIMEOUT_MS:-900000}
+      SHERLOCK_REQUEST_TIMEOUT: ${SHERLOCK_REQUEST_TIMEOUT:-30}
+      HARVESTER_IMAGE: ${HARVESTER_IMAGE:-ghcr.io/laramies/theharvester:latest}
+      HARVESTER_MEMORY: ${HARVESTER_MEMORY:-1g}
+      HARVESTER_CPUS: ${HARVESTER_CPUS:-1.0}
+      HARVESTER_TIMEOUT_MS: ${HARVESTER_TIMEOUT_MS:-900000}
+      # Integração de API (fontes keyed): flag + segredo de cifra das chaves.
+      # O segredo (ou NEXTAUTH_SECRET) precisa ser IGUAL ao do serviço radar.
+      HARVESTER_API_ENABLED: ${HARVESTER_API_ENABLED:-false}
+      HARVESTER_KEYS_SECRET: ${HARVESTER_KEYS_SECRET:-}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Defina NEXTAUTH_SECRET no .env (openssl rand -base64 32)}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      disable: true
+
+  redis:
+    image: redis:7-alpine
+    container_name: radar-security-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: radar-security-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-radar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-radar}
+    volumes:
+      - radar_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radar -d radar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  radar_data:
+  redis_data:

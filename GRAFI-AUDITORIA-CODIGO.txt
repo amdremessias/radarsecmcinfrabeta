@@ -1,0 +1,113 @@
+1. Interface Web Interativa (Dashboard da Plataforma)
+Plaintext
++-------------------------------------------------------------------------------------------------------------+
+| 🛡️ MCinfraTI Radar Security   [📊 Visão Geral]  [🔍 Code Audit (SAST)]  [📄 Relatórios]     [👤 Minha Conta] |
++-------------------------------------------------------------------------------------------------------------+
+|                                                                                                             |
+|  < Voltar aos Projetos   /   Projeto: my-saas-app-backend                                                    |
+|                                                                                                             |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|  | 🎯 STACK DETECTADA: Node.js (TypeScript) | Next.js 14 | Supabase (RLS) | NextAuth.js                     |  |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|                                                                                                             |
+|  +-------------------+  +-------------------+  +-------------------+  +-------------------+  +---------------+  |
+|  | 🚨 CRÍTICA        |  | 🟧 ALTA           |  | 🟨 MÉDIA          |  | 🟦 BAIXA          |  | 🟩 FORTES     |  |
+|  |       1           |  |       3           |  |       2           |  |       4           |  |      12       |  |
+|  +-------------------+  +-------------------+  +-------------------+  +-------------------+  +---------------+  |
+|                                                                                                             |
+|  [ Filtrar Categoria: Todas v ]  [ Severidade: Todas v ]            [ 📥 Exportar PDF com GitHub Issues ]   |
+|                                                                                                             |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|  |  [ 🔴 CRÍTICA ]  BANCO SEM TRANCA (RLS Ausente)                                                       |  |
+|  |  Arquivo: src/api/routes/tenants.ts:42                                                                |  |
+|  |-------------------------------------------------------------------------------------------------------|  |
+|  |  > Código Afetado:                                                                                    |  |
+|  |    const tenants = await supabase.from('organizations').select('*');                                  |  |
+|  |                                                                                                       |  |
+|  |  > Motivo da Falha:                                                                                   |  |
+|  |    A consulta faz uma listagem global sem filtrar pelo tenant_id do usuário autenticado no JWT.       |  |
+|  |                                                                                                       |  |
+|  |  > Sugestão de Correção:                                                                              |  |
+|  |    Habilite a política de RLS na tabela organizações ou aplique `.eq('tenant_id', user.tenant_id)`.    |  |
+|  |                                                                                                       |  |
+|  |  [ 📋 Copiar Issue GitHub ]  [ ⚡ Marcar como Corrigido ]                                               |  |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|                                                                                                             |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|  |  [ 🟧 ALTA ]     IDOR (Broken Object Level Authorization)                                              |  |
+|  |  Arquivo: src/controllers/userController.ts:108                                                       |  |
+|  |-------------------------------------------------------------------------------------------------------|  |
+|  |  > Código Afetado:                                                                                    |  |
+|  |    const user = await prisma.user.delete({ where: { id: req.params.id } });                            |  |
+|  |                                                                                                       |  |
+|  |  [ 📋 Copiar Issue GitHub ]  [ ⚡ Marcar como Corrigido ]                                               |  |
+|  +-------------------------------------------------------------------------------------------------------+  |
+|                                                                                                             |
++-------------------------------------------------------------------------------------------------------------+
+2. Layout Visual do Relatório Exportado em PDF
+Plaintext
+===============================================================================================================
+ PAGE 1 / A4                                                                    MCinfraTI Radar Security
+===============================================================================================================
+
+  🛡️ MCinfraTI Radar Security
+  -----------------------------------------------------------------------------------------------------------
+  RELATÓRIO DE AUDITORIA DE SEGURANÇA DE CÓDIGO (SAST)
+  Projeto: my-saas-app-backend | Data: 06/09/2026 | ID: #scan-9831a
+
+  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ 🖥️ DETECÇÃO DA STACK DO PROJETO                                                                         │
+  │ • Linguagem: TypeScript (Node.js v20)             • ORM / BD: Supabase PostgreSQL (RLS)                │
+  │ • Framework: Next.js 14 (App Router)             • Auth: NextAuth.js (JWT)                             │
+  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  MÉTRICAS DA AUDITORIA
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [ Crítica: 1 ]     [ Alta: 3 ]     [ Média: 2 ]     [ Baixa: 4 ]     [ Pontos Fortes: 12 ]
+  ████████████       ███████████████ ██████████       ████████████████  █████████████████████████████████████
+
+  ✓ PONTOS FORTES ENCONTRADOS (EVIDÊNCIAS DE SEGURANÇA)
+  -----------------------------------------------------------------------------------------------------------
+  • src/middleware.ts:6 - Validação correta de token JWT em todas as rotas da API.
+  • src/utils/sanitize.ts:14 - Sanitização ativa de HTML/Inputs prevenindo XSS Stored.
+
+  
+  TABELA DE ACHADOS CRÍTICOS & ALTOS
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  SEVERIDADE   ARQUIVO:LINHA                      CATEGORIA             DESCRIÇÃO RESUMIDA
+  ──────────   ───────────────────────────────    ───────────────────   ─────────────────────────────────────
+  [ CRÍTICA ]  src/api/routes/tenants.ts:42       Banco sem Tranca      Query sem filtro de tenant/RLS.
+  [   ALTA  ]  src/controllers/user.ts:108        IDOR                  Exclusão por ID sem validar posse.
+  [   ALTA  ]  docker-compose.yml:18              Chave Exposta         JWT_SECRET com valor default exposto.
+
+
+===============================================================================================================
+ PAGE 2 / A4                                                                    MCinfraTI Radar Security
+===============================================================================================================
+
+  SEÇÃO ESPECIAL: ISSUES PRONTAS PARA O GITHUB
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Copie e cole o bloco abaixo diretamente ao criar uma Issue no seu repositório:
+
+  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ --- ISSUE 1 ---                                                                                         │
+  │ ### [Segurança] BANCO SEM TRANCA: RLS ausente na rota de listagem                                       │
+  │                                                                                                         │
+  │ **Labels:** `security`, `critical`                                                                      │
+  │                                                                                                         │
+  │ #### 1. Descrição do Problema                                                                           │
+  │ A rota de listagem busca dados no banco sem verificar o workspace/tenant do usuário autenticado.        │
+  │                                                                                                         │
+  │ #### 2. Evidência                                                                                       │
+  │ - **Arquivo:** `src/api/routes/tenants.ts` (Linha: 42)                                                 │
+  │ ```typescript                                                                                           │
+  │ const tenants = await supabase.from('organizations').select('*');                                       │
+  │ ```                                                                                                     │
+  │                                                                                                         │
+  │ #### 3. Critérios de Aceite                                                                             │
+  │ - [ ] Adicionar filtro de tenant na query ou habilitar RLS no Supabase.                                  │
+  │ - [ ] Criar teste de integração garantindo HTTP 403 ao acessar dados de terceiros.                      │
+  │ --- FIM ISSUE 1 ---                                                                                     │
+  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+==============================================================================================================

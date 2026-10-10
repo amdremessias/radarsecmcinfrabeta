@@ -1,0 +1,7 @@
+npm notice run mcintra-radar-security@1.1.0 npx
+npm notice run next start -p 3002
+▲ Next.js 16.3.4
+- Local:         http://localhost:3002
+- Network:       http://169.254.83.107:3002
+✓ Ready in 311ms
+✓ Running next.config.ts took 77ms

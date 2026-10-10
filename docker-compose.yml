@@ -1,0 +1,127 @@
+name: radar-security
+
+services:
+  radar:
+    build: .
+    container_name: radar-security
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://radar:radar@db:5432/radar
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-mcintra-secret-portfolio-smoke-sandbox}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@radar.local}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-radar123}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SCAN_ASYNC=${SCAN_ASYNC:-false}
+      - OSINT_ASYNC=${OSINT_ASYNC:-true}
+      - HARVESTER_API_ENABLED=${HARVESTER_API_ENABLED:-false}
+      - HARVESTER_KEYS_SECRET=${HARVESTER_KEYS_SECRET:-}
+      - HARVESTER_IMAGE=${HARVESTER_IMAGE:-ghcr.io/laramies/theharvester:latest}
+      - HARVESTER_MEMORY=${HARVESTER_MEMORY:-1g}
+      - HARVESTER_CPUS=${HARVESTER_CPUS:-1.0}
+      - HARVESTER_TIMEOUT_MS=${HARVESTER_TIMEOUT_MS:-900000}
+      - NODE_ENV=production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: radar-security-worker
+    command: ["node", "dist/worker.cjs"]
+    environment:
+      - DATABASE_URL=postgresql://radar:radar@db:5432/radar
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ENV=production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      disable: true
+
+  osint-worker:
+    build: .
+    container_name: radar-security-osint-worker
+    command: ["node", "dist/osint-worker.cjs"]
+    # Necessário para acessar /var/run/docker.sock (grupo docker varia por host).
+    user: root
+    environment:
+      - DATABASE_URL=postgresql://radar:radar@db:5432/radar
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ENV=production
+      - OSINT_ASYNC=true
+      - SHERLOCK_IMAGE=${SHERLOCK_IMAGE:-sherlock/sherlock:latest}
+      - MAIGRET_IMAGE=${MAIGRET_IMAGE:-soxoj/maigret:latest}
+      - SHERLOCK_MEMORY=${SHERLOCK_MEMORY:-512m}
+      - SHERLOCK_CPUS=${SHERLOCK_CPUS:-1.0}
+      - SHERLOCK_TIMEOUT_MS=${SHERLOCK_TIMEOUT_MS:-900000}
+      - SHERLOCK_REQUEST_TIMEOUT=${SHERLOCK_REQUEST_TIMEOUT:-30}
+      - HARVESTER_IMAGE=${HARVESTER_IMAGE:-ghcr.io/laramies/theharvester:latest}
+      - HARVESTER_MEMORY=${HARVESTER_MEMORY:-1g}
+      - HARVESTER_CPUS=${HARVESTER_CPUS:-1.0}
+      - HARVESTER_TIMEOUT_MS=${HARVESTER_TIMEOUT_MS:-900000}
+      # Integração de API (fontes keyed): flag + segredo de cifra das chaves.
+      # O segredo (ou NEXTAUTH_SECRET) precisa ser IGUAL ao do serviço radar.
+      - HARVESTER_API_ENABLED=${HARVESTER_API_ENABLED:-false}
+      - HARVESTER_KEYS_SECRET=${HARVESTER_KEYS_SECRET:-}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-mcintra-secret-portfolio-smoke-sandbox}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      disable: true
+
+  redis:
+    image: redis:7-alpine
+    container_name: radar-security-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: radar-security-db
+    environment:
+      POSTGRES_USER: radar
+      POSTGRES_PASSWORD: radar
+      POSTGRES_DB: radar
+    ports:
+      - "5435:5432"
+    volumes:
+      - radar_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radar -d radar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  radar_data:
+  redis_data:

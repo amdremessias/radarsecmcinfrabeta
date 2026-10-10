@@ -1,0 +1,2 @@
+[Worker] Radar Security scan worker online (fila: security-scans).
+[Worker] job 1 (web) concluído { scanId: 18, status: 'completed', score: 28, grade: 'F' }

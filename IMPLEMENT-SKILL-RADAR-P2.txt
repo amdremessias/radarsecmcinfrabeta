@@ -1,0 +1,219 @@
+IMPLEMENT-SKILL-RADAR-P2
+Markdown
+## 7. Guia de Extensão: Como Criar Novos Adaptadores de Scanner
+
+A arquitetura do **MCinfraTI Radar Security** foi projetada para ser facilmente estendida. Para adicionar uma nova ferramenta (ex: Trivy, Nmap, Nuclei, ZAP), siga este fluxo padrão de 3 etapas:
+
+1. **Implementar a Interface `IScanner`**: Crie a classe do scanner garantindo o isolamento da execução CLI e o tratamento de erros/timeouts.
+2. **Criar ou Reutilizar um Parser**: Caso a ferramenta exporte em **SARIF**, utilize o `SarifParser`. Se exportar em JSON/XML nativo, crie um parser dedicado mapeando os achados para `Vulnerability[]`.
+3. **Registrar no `ScannerRegistry`**: Instancie e registre a nova ferramenta no orquestrador.
+
+---
+
+### Exemplo 1: Adaptador para Trivy (`src/scanners/trivy.scanner.ts`)
+
+O Trivy realiza escaneamento de vulnerabilidades em sistemas de arquivos, imagens Docker e dependências.
+
+```typescript
+import { IScanner, ScanOptions, UnifiedScanResult, Vulnerability } from '../types/scanner';
+import { execa } from 'execa';
+import { crypto } from 'node:crypto';
+
+export class TrivyScanner implements IScanner {
+  private readonly toolName = 'Trivy';
+
+  public async scan(target: string, options: ScanOptions = {}): Promise<UnifiedScanResult> {
+    const startTime = Date.now();
+    const scanId = crypto.randomUUID();
+    const timeoutMs = options.timeoutMs || 5 * 60 * 1000;
+
+    try {
+      // Executa Trivy gerando saída em JSON nativo
+      const { stdout } = await execa(
+        'trivy',
+        ['fs', '--format', 'json', target, ...(options.extraArgs || [])],
+        { timeout: timeoutMs }
+      );
+
+      const vulnerabilities = this.parseTrivyJson(stdout);
+
+      return {
+        scanId,
+        toolName: this.toolName,
+        target,
+        status: 'SUCCESS',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities
+      };
+    } catch (error: any) {
+      return {
+        scanId,
+        toolName: this.toolName,
+        target,
+        status: (error.timedOut || error.killed) ? 'TIMEOUT' : 'FAILED',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities: [],
+        error: error.message || String(error)
+      };
+    }
+  }
+
+  private parseTrivyJson(jsonContent: string): Vulnerability[] {
+    if (!jsonContent) return [];
+    
+    const parsed = JSON.parse(jsonContent);
+    const vulnerabilities: Vulnerability[] = [];
+    const results = parsed.Results || [];
+
+    for (const result of results) {
+      const vulns = result.Vulnerabilities || [];
+      for (const item of vulns) {
+        vulnerabilities.push({
+          id: item.VulnerabilityID || 'UNKNOWN_VULN',
+          title: item.Title || item.VulnerabilityID,
+          description: item.Description || 'Sem descrição.',
+          severity: this.mapSeverity(item.Severity),
+          cveId: item.VulnerabilityID.startsWith('CVE-') ? item.VulnerabilityID : undefined,
+          filePath: result.Target,
+          remediation: item.FixedVersion ? `Atualizar para a versão ${item.FixedVersion}` : undefined,
+          toolName: this.toolName,
+          rawDetails: {
+            pkgName: item.PkgName,
+            installedVersion: item.InstalledVersion,
+            primaryURL: item.PrimaryURL
+          }
+        });
+      }
+    }
+
+    return vulnerabilities;
+  }
+
+  private mapSeverity(trivySeverity: string): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+    switch (trivySeverity?.toUpperCase()) {
+      case 'CRITICAL': return 'CRITICAL';
+      case 'HIGH': return 'HIGH';
+      case 'MEDIUM': return 'MEDIUM';
+      case 'LOW':
+      default: return 'LOW';
+    }
+  }
+}
+Exemplo 2: Adaptador para Nmap (src/scanners/nmap.scanner.ts)
+O Nmap executa mapeamento de rede e identificação de portas/serviços expostos.
+
+TypeScript
+import { IScanner, ScanOptions, UnifiedScanResult, Vulnerability } from '../types/scanner';
+import { execa } from 'execa';
+import { parseStringPromise } from 'xml2js';
+import { crypto } from 'node:crypto';
+
+export class NmapScanner implements IScanner {
+  private readonly toolName = 'Nmap';
+
+  public async scan(target: string, options: ScanOptions = {}): Promise<UnifiedScanResult> {
+    const startTime = Date.now();
+    const scanId = crypto.randomUUID();
+    const timeoutMs = options.timeoutMs || 3 * 60 * 1000;
+
+    try {
+      // Executa o Nmap exportando o resultado em XML (-oX -)
+      const { stdout } = await execa(
+        'nmap',
+        ['-sV', '-oX', '-', target, ...(options.extraArgs || [])],
+        { timeout: timeoutMs }
+      );
+
+      const vulnerabilities = await this.parseNmapXml(stdout);
+
+      return {
+        scanId,
+        toolName: this.toolName,
+        target,
+        status: 'SUCCESS',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities
+      };
+    } catch (error: any) {
+      return {
+        scanId,
+        toolName: this.toolName,
+        target,
+        status: (error.timedOut || error.killed) ? 'TIMEOUT' : 'FAILED',
+        executionTimeMs: Date.now() - startTime,
+        vulnerabilities: [],
+        error: error.message || String(error)
+      };
+    }
+  }
+
+  private async parseNmapXml(xmlContent: string): Promise<Vulnerability[]> {
+    if (!xmlContent) return [];
+    
+    const parsed = await parseStringPromise(xmlContent);
+    const vulnerabilities: Vulnerability[] = [];
+    const hosts = parsed.nmaprun?.host || [];
+
+    for (const host of hosts) {
+      const ports = host.ports?.[0]?.port || [];
+
+      for (const portObj of ports) {
+        const state = portObj.state?.[0]?.$?.state;
+        if (state !== 'open') continue;
+
+        const portId = portObj.$?.portid;
+        const protocol = portObj.$?.protocol;
+        const service = portObj.service?.[0]?.$?.name || 'unknown';
+        const product = portObj.service?.[0]?.$?.product || '';
+        const version = portObj.service?.[0]?.$?.version || '';
+
+        vulnerabilities.push({
+          id: `PORT-${portId}-${protocol.toUpperCase()}`,
+          title: `Porta Aberta: ${portId}/${protocol.toUpperCase()} (${service})`,
+          description: `Serviço detectado: ${product} ${version}`.trim(),
+          severity: 'LOW', // Portas abertas por padrão iniciam como LOW, a menos que haja NSE scripts associados
+          toolName: this.toolName,
+          rawDetails: {
+            port: portId,
+            protocol,
+            service,
+            product,
+            version
+          }
+        });
+      }
+    }
+
+    return vulnerabilities;
+  }
+}
+Registro dos Novos Scanners (src/scanners/scanner.registry.ts)
+Após implementar as classes, atualize o registro do orquestrador:
+
+TypeScript
+import { IScanner } from '../types/scanner';
+import { CodeQLScanner } from './codeql.scanner';
+import { TrivyScanner } from './trivy.scanner';
+import { NmapScanner } from './nmap.scanner';
+
+export class ScannerRegistry {
+  private scanners: Map<string, IScanner> = new Map();
+
+  constructor() {
+    this.register('codeql', new CodeQLScanner());
+    this.register('trivy', new TrivyScanner());
+    this.register('nmap', new NmapScanner());
+  }
+
+  public register(name: string, scanner: IScanner): void {
+    this.scanners.set(name.toLowerCase(), scanner);
+  }
+
+  public get(name: string): IScanner {
+    const scanner = this.scanners.get(name.toLowerCase());
+    if (!scanner) {
+      throw new Error(`Scanner '${name}' não foi registrado no MCinfraTI Radar Security.`);
+    }
+    return scanner;
+  }
+}
